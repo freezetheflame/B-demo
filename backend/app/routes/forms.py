@@ -118,6 +118,58 @@ class ReportSubmit(BaseModel):
     data: dict = Field(default_factory=dict, example={"revenue": 156000, "orders": 3200})
 
 
+# ─── Auto-Cluster Helper ───
+
+async def _auto_cluster_new_merchant(db: AsyncSession, form, lat: float, lng: float) -> dict:
+    """
+    自动聚合：新商户提交后，查找 500m 内的其他 SUBMITTED 商户，
+    如果找到 → 分配同一个 batch_id 形成簇；如果没有 → 自成新簇。
+    """
+    from app.routes.aggregation import haversine_m
+    from sqlalchemy import text as sa_text
+
+    # 用 PostGIS ST_DWithin 快速过滤 500m 内的候选商户
+    result = await db.execute(
+        sa_text("""
+            SELECT id, ST_Y(geo) AS lat, ST_X(geo) AS lng
+            FROM merchant_forms
+            WHERE status = 'SUBMITTED'
+              AND geo IS NOT NULL
+              AND id != :my_id
+              AND ST_DWithin(
+                  geo,
+                  ST_SetSRID(ST_MakePoint(:lng, :lat), 4326),
+                  0.005  -- ~500m in degrees at Nanjing latitude
+              )
+            LIMIT 100
+        """),
+        {"my_id": form.id, "lat": lat, "lng": lng}
+    )
+    candidates = result.fetchall()
+
+    # Haversine 精确过滤
+    nearby_ids = []
+    for row in candidates:
+        dist = haversine_m(lat, lng, float(row.lat), float(row.lng))
+        if dist <= 500:
+            nearby_ids.append(int(row.id))
+
+    if nearby_ids:
+        # 有邻近商户 → 归入同一个 batch_id
+        batch_id = f"auto_{int(time.time())}_{form.id}"
+        form.batch_id = batch_id
+        await db.execute(
+            sa_text("UPDATE merchant_forms SET batch_id = :bid WHERE id = ANY(:ids)"),
+            {"bid": batch_id, "ids": nearby_ids}
+        )
+        return {"auto_clustered": True, "cluster_size": len(nearby_ids) + 1, "batch_id": batch_id}
+    else:
+        # 无邻近商户 → 自成新簇
+        batch_id = f"auto_{int(time.time())}_{form.id}"
+        form.batch_id = batch_id
+        return {"auto_clustered": True, "cluster_size": 1, "batch_id": batch_id}
+
+
 # ─── CRUD APIs ───
 
 @router.post("/{form_type}/submit")
@@ -141,9 +193,12 @@ async def submit_merchant(body: MerchantSubmit, db: AsyncSession = Depends(get_d
     await db.flush()
 
     _log_submission(db, "merchant", str(form.id), "success", 0, None)
-    await db.commit()
 
-    return {"id": form.id, "status": "submitted", "form_type": "merchant"}
+    # 自动聚合：查找 500m 内的邻近商户 → 归入同一 batch_id
+    cluster_info = await _auto_cluster_new_merchant(db, form, body.lat, body.lng)
+
+    await db.commit()
+    return {"id": form.id, "status": "submitted", "form_type": "merchant", **cluster_info}
 
 
 @router.post("/listing/submit")

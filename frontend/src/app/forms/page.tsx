@@ -1,7 +1,8 @@
 "use client";
-import { useState, useCallback, useEffect } from "react";
+import { useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { List } from "react-window";
+import { useFormStore } from "@/store";
 
 const FORM_TYPES = [
   { key: "merchant", label: "商户信息", desc: "商户信息提交流程 → 数据清洗 → 地理编码 → 批量聚合 → 状态更新" },
@@ -51,9 +52,7 @@ const statusColors: Record<string, string> = {
   rejected: "bg-red-100 text-red-600",
 };
 
-const formCache = new Map<string, { data: any[]; total: number }>();
-
-function formatCell(key: string, val: any): string {
+function fmt(key: string, val: unknown): string {
   if (val === null || val === undefined) return "-";
   if (key === "price") return `¥${Number(val).toLocaleString()}`;
   if (key === "area") return `${Number(val).toFixed(1)}`;
@@ -61,80 +60,25 @@ function formatCell(key: string, val: any): string {
   return String(val);
 }
 
-export default function FormsPage() {
+function FormsPageInner() {
   const searchParams = useSearchParams();
-  const [type, setType] = useState(searchParams.get("type") || "merchant");
-  const [page, setPage] = useState(1);
-  const [rows, setRows] = useState<any[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [keyword, setKeyword] = useState("");
-  const [filterStatus, setFilterStatus] = useState("");
+  const store = useFormStore();
 
-  const PAGE_SIZE = 100;
-  const totalPages = Math.ceil(total / PAGE_SIZE);
-  const cols = COLUMNS[type] || COLUMNS.merchant;
-
-  const fetchForms = useCallback(async (formType: string, p: number, kw: string, st: string) => {
-    const cacheKey = `${formType}:${p}:${kw}:${st}`;
-    const cached = formCache.get(cacheKey);
-    if (cached) {
-      setRows(cached.data);
-      setTotal(cached.total);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams();
-      params.set("page", String(p));
-      params.set("page_size", String(PAGE_SIZE));
-      if (kw) params.set("keyword", kw);
-      if (st) params.set("status", st);
-      const res = await fetch(`http://localhost:8000/api/v1/forms/${formType}?${params}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      formCache.set(cacheKey, { data: data.data || [], total: data.total || 0 });
-      if (formCache.size > 50) {
-        const firstKey = formCache.keys().next().value;
-        if (firstKey) formCache.delete(firstKey);
-      }
-      setRows(data.data || []);
-      setTotal(data.total || 0);
-    } catch (e: any) {
-      setError(e.message);
-      setRows([]);
-      setTotal(0);
-    }
-    setLoading(false);
+  // Init from URL param
+  useEffect(() => {
+    const t = searchParams.get("type");
+    if (t) store.setType(t);
   }, []);
 
+  // Fetch on filter/page change
   useEffect(() => {
-    fetchForms(type, page, keyword, filterStatus);
-  }, [type, page, keyword, filterStatus, fetchForms]);
+    store.fetchForms();
+  }, [store.formType, store.page, store.keyword, store.filterStatus]);
 
-  const handleBatchProcess = async () => {
-    if (rows.length === 0) return;
-    const ids = rows.slice(0, 100).map(r => r.id);
-    try {
-      const res = await fetch(`http://localhost:8000/api/v1/forms/${type}/batch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(ids),
-      });
-      if (res.ok) {
-        formCache.clear();
-        fetchForms(type, page, keyword, filterStatus);
-      }
-    } catch (e: any) {
-      setError(`批处理失败: ${e.message}`);
-    }
-  };
+  const cols = COLUMNS[store.formType] || COLUMNS.merchant;
 
-  // Virtual row renderer
   const RowRenderer = ({ index, style }: { index: number; style: React.CSSProperties }) => {
-    const row = rows[index];
+    const row = store.rows[index];
     if (!row) return null;
     const st = (row.status || "").toLowerCase();
     const color = statusColors[st] || "bg-gray-100";
@@ -144,11 +88,16 @@ export default function FormsPage() {
           <span key={c.key} className={c.key === "status"
             ? `px-2 py-0.5 rounded text-xs font-medium ${color} ${c.width}`
             : `${c.width} text-gray-700 truncate`}>
-            {c.key === "status" ? (row.status || "-") : formatCell(c.key, row[c.key])}
+            {c.key === "status" ? (row.status || "-") : fmt(c.key, row[c.key])}
           </span>
         ))}
       </div>
     );
+  };
+
+  const handleBatch = () => {
+    const ids = store.rows.slice(0, 100).map(r => r.id);
+    store.batchProcess(ids);
   };
 
   return (
@@ -156,44 +105,34 @@ export default function FormsPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">表单管理</h1>
         <span className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded">
-          LRU缓存: {formCache.size} 页 · 虚拟滚动
+          MVVM · LRU缓存: {store.cacheSize()} 页 · 虚拟滚动
         </span>
       </div>
 
-      {/* Form Type Tabs */}
+      {/* Tabs */}
       <div className="flex gap-2 border-b pb-2">
-        {FORM_TYPES.map((ft) => (
-          <button
-            key={ft.key}
-            onClick={() => { setType(ft.key); setPage(1); }}
-            className={`px-4 py-1.5 rounded-t text-sm transition-colors ${
-              type === ft.key ? "bg-blue-500 text-white" : "bg-gray-100 hover:bg-gray-200"
-            }`}
-          >
+        {FORM_TYPES.map(ft => (
+          <button key={ft.key} onClick={() => store.setType(ft.key)}
+            className={`px-4 py-1.5 rounded-t text-sm ${
+              store.formType === ft.key ? "bg-blue-500 text-white" : "bg-gray-100 hover:bg-gray-200"}`}>
             {ft.label}
           </button>
         ))}
       </div>
 
-      {/* Flow Description */}
       <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-sm text-blue-800">
-        <strong>当前流程：</strong>{FORM_TYPES.find(ft => ft.key === type)?.desc}
+        <strong>当前流程：</strong>{FORM_TYPES.find(ft => ft.key === store.formType)?.desc}
       </div>
 
-      {/* Filter Bar */}
+      {/* Filters */}
       <div className="flex gap-3 flex-wrap items-center">
-        <input
-          placeholder="搜索关键词..."
-          value={keyword}
-          onChange={e => setKeyword(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && setPage(1)}
-          className="px-3 py-1.5 border rounded text-sm w-48"
-        />
-        <select
-          value={filterStatus}
-          onChange={e => { setFilterStatus(e.target.value); setPage(1); }}
-          className="px-3 py-1.5 border rounded text-sm"
-        >
+        <input placeholder="搜索关键词..." value={store.keyword}
+          onChange={e => store.setKeyword(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && store.fetchForms()}
+          className="px-3 py-1.5 border rounded text-sm w-48" />
+        <select value={store.filterStatus}
+          onChange={e => store.setFilterStatus(e.target.value)}
+          className="px-3 py-1.5 border rounded text-sm">
           <option value="">全部状态</option>
           <option value="draft">草稿</option>
           <option value="submitted">已提交</option>
@@ -201,69 +140,65 @@ export default function FormsPage() {
           <option value="approved">已通过</option>
           <option value="rejected">已驳回</option>
         </select>
-        <button onClick={handleBatchProcess} disabled={rows.length === 0}
+        <button onClick={handleBatch} disabled={store.rows.length === 0}
           className="px-4 py-1.5 bg-amber-500 text-white rounded text-sm hover:bg-amber-600 disabled:opacity-50">
           批处理(前100条)
         </button>
-        {total > 0 && (
+        {store.total > 0 && (
           <span className="text-xs text-gray-400 ml-auto">
-            共 {total.toLocaleString()} 条 | 第 {page}/{totalPages || 1} 页
+            共 {store.total.toLocaleString()} 条 | 第 {store.page}/{store.totalPages() || 1} 页
           </span>
         )}
       </div>
 
-      {/* Data Table */}
+      {/* Table */}
       <div className="bg-white rounded-lg border overflow-hidden">
-        {/* Header */}
         <div className="flex items-center px-3 py-2 border-b bg-gray-50 text-xs font-medium text-gray-500">
-          {cols.map(c => (
-            <span key={c.key} className={c.width}>{c.label}</span>
-          ))}
+          {cols.map(c => <span key={c.key} className={c.width}>{c.label}</span>)}
         </div>
-
-        {loading ? (
+        {store.loading ? (
           <div className="flex items-center justify-center gap-2 p-12 text-gray-400">
-            <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-            加载中...
+            <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />加载中...
           </div>
-        ) : error ? (
+        ) : store.error ? (
           <div className="p-12 text-center">
-            <p className="text-red-500 text-sm mb-2">错误: {error}</p>
-            <button onClick={() => fetchForms(type, page, keyword, filterStatus)}
-              className="text-blue-500 text-sm underline">重试</button>
+            <p className="text-red-500 text-sm mb-2">错误: {store.error}</p>
+            <button onClick={() => store.fetchForms()} className="text-blue-500 text-sm underline">重试</button>
           </div>
-        ) : rows.length === 0 ? (
-          <div className="p-12 text-center text-gray-400 text-sm">
-            暂无数据 — 调整筛选条件或运行种子脚本
-          </div>
+        ) : store.rows.length === 0 ? (
+          <div className="p-12 text-center text-gray-400 text-sm">暂无数据</div>
         ) : (
-          <List
-            style={{ height: 500, width: "100%", overflowX: "auto" }}
-            rowCount={rows.length}
-            rowHeight={36}
-            rowComponent={RowRenderer}
-            rowProps={{}}
-          />
+          <List style={{ height: 500, width: "100%", overflowX: "auto" }}
+            rowCount={store.rows.length} rowHeight={36}
+            rowComponent={RowRenderer} rowProps={{}} />
         )}
       </div>
 
       {/* Pagination */}
-      {totalPages > 1 && (
+      {store.totalPages() > 1 && (
         <div className="flex items-center justify-center gap-2 text-sm">
-          <button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}
+          <button disabled={store.page <= 1} onClick={() => store.setPage(store.page - 1)}
             className="px-3 py-1 border rounded hover:bg-gray-50 disabled:opacity-30">上一页</button>
-          <span className="px-3 py-1 text-gray-600">{page} / {totalPages}</span>
-          <button disabled={page >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+          <span className="px-3 py-1 text-gray-600">{store.page} / {store.totalPages()}</span>
+          <button disabled={store.page >= store.totalPages()}
+            onClick={() => store.setPage(store.page + 1)}
             className="px-3 py-1 border rounded hover:bg-gray-50 disabled:opacity-30">下一页</button>
         </div>
       )}
 
-      {/* Footer */}
       <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-500 flex items-center gap-2">
         <span className="w-2 h-2 rounded-full bg-green-400" />
-        <span>WebSocket: ws://localhost:8000/ws/progress (已就绪)</span>
-        <span className="ml-auto">缓存命中: {formCache.size} 分页</span>
+        <span>WebSocket: ws://localhost:8000/ws/progress | MVVM via Zustand</span>
+        <span className="ml-auto">缓存: {store.cacheSize()} 页</span>
       </div>
     </div>
+  );
+}
+
+export default function FormsPage() {
+  return (
+    <Suspense fallback={<div className="p-12 text-gray-400">加载中...</div>}>
+      <FormsPageInner />
+    </Suspense>
   );
 }
