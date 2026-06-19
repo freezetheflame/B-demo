@@ -109,25 +109,49 @@ async def seed_submission_logs(count: int = 50000):
     """Seed submission logs for analytics."""
     async with async_session() as session:
         form_types = ["merchant", "listing", "product", "report"]
-        statuses = ["start", "success", "fail", "timeout"]
+        ok_statuses = ["start", "success", "timeout"]       # non-failure statuses
         error_codes = ["FORM_001", "FORM_002", "DB_001", "NET_001", "AUTH_001"]
+        error_msgs = {
+            "FORM_001": "表单字段校验失败",
+            "FORM_002": "必填字段缺失",
+            "DB_001": "数据库写入超时",
+            "NET_001": "网络请求超时",
+            "AUTH_001": "权限验证失败",
+        }
 
         for i in range(count):
             is_fail = random.random() < 0.08  # ~8% failure rate
-            log = SubmissionLog(
-                form_type=random.choice(form_types),
-                merchant_id=f"m_{random.randint(1, 1000):06d}",
-                status=random.choice(statuses) if not is_fail else "fail",
-                duration_ms=random.randint(50, 5000),
-                error_code=random.choice(error_codes) if is_fail else None,
-                error_msg="模拟错误" if is_fail else None,
-                geo_hash=f"{GEOHASH_BASE32[random.randint(0, 31)]}{GEOHASH_BASE32[random.randint(0, 31)]}",
-                batch_id=f"batch_{random.randint(1, 100)}" if random.random() < 0.3 else None,
-                created_at=datetime.utcnow() - timedelta(
-                    hours=random.randint(0, 168),  # last 7 days
-                    minutes=random.randint(0, 59),
-                ),
-            )
+            if is_fail:
+                code = random.choice(error_codes)
+                log = SubmissionLog(
+                    form_type=random.choice(form_types),
+                    merchant_id=f"m_{random.randint(1, 1000):06d}",
+                    status="fail",
+                    duration_ms=random.randint(200, 5000),
+                    error_code=code,
+                    error_msg=error_msgs[code],
+                    geo_hash=f"{GEOHASH_BASE32[random.randint(0, 31)]}{GEOHASH_BASE32[random.randint(0, 31)]}",
+                    batch_id=f"batch_{random.randint(1, 100)}" if random.random() < 0.3 else None,
+                    created_at=datetime.utcnow() - timedelta(
+                        hours=random.randint(0, 168),
+                        minutes=random.randint(0, 59),
+                    ),
+                )
+            else:
+                log = SubmissionLog(
+                    form_type=random.choice(form_types),
+                    merchant_id=f"m_{random.randint(1, 1000):06d}",
+                    status=random.choice(ok_statuses),
+                    duration_ms=random.randint(50, 3000),
+                    error_code=None,
+                    error_msg=None,
+                    geo_hash=f"{GEOHASH_BASE32[random.randint(0, 31)]}{GEOHASH_BASE32[random.randint(0, 31)]}",
+                    batch_id=f"batch_{random.randint(1, 100)}" if random.random() < 0.3 else None,
+                    created_at=datetime.utcnow() - timedelta(
+                        hours=random.randint(0, 168),
+                        minutes=random.randint(0, 59),
+                    ),
+                )
             session.add(log)
             if i > 0 and i % 5000 == 0:
                 await session.commit()
