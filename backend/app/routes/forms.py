@@ -172,7 +172,7 @@ async def _auto_cluster_new_merchant(db: AsyncSession, form, lat: float, lng: fl
 
 # ─── CRUD APIs ───
 
-@router.post("/{form_type}/submit")
+@router.post("/merchant/submit")
 async def submit_merchant(body: MerchantSubmit, db: AsyncSession = Depends(get_db)):
     """提交商户信息表单。"""
     import time as _time
