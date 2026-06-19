@@ -175,19 +175,43 @@ KnowledgeDocVersion
 
 ### 5. 批处理 + WebSocket 实时进度
 
+批处理不是统一改状态——**四种表单走四种不同的业务流程**：
+
 ```
-操作员 → 前端选择表单 → 点击批处理
-    ↓
-POST /api/v1/forms/{type}/batch
-    ↓
-后端分 10 步处理，每步通过 WebSocket 广播进度
-    ↓
-ws://localhost:8000/ws/progress
-    ↓
-{"event":"batch:progress","data":{"batch_id":"...","current":60,"total":100,"percent":60,"status":"processing"}}
-    ↓
-前端实时展示进度
+POST /api/v1/forms/{type}/batch  +  body: [id1, id2, ...]
+    │
+    ├─ merchant (商户信息)
+    │   ① 数据清洗 → 校验名称/地址非空
+    │   ② 地理编码 → 从 PostGIS geo 提取坐标，计算 geohash
+    │   ③ 分配批次 → 同批商户共用 batch_id
+    │   ④ 审批通过 → APPROVED | 失败 → REJECTED
+    │   返回: { approved, failed, geocoded }
+    │
+    ├─ listing (商户房源)
+    │   ① 按商户聚合 → 统计每个 merchant 的房源数/总面积/总价
+    │   ② 单价校验 → 计算每 m² 单价，<¥10 或 >¥50000 → 异常
+    │   ③ 批量审批 → 正常→APPROVED | 异常→REJECTED
+    │   返回: { approved, rejected, merchants_affected }
+    │
+    ├─ product (商户商品)
+    │   ① SKU 查重 → 扫描批次内所有 SKU，标记重复项
+    │   ② 库存检查 → stock ≤ 0 → REJECTED
+    │   ③ 批量上架 → 通过→APPROVED
+    │   返回: { approved, rejected, duplicate_skus }
+    │
+    └─ report (商户报表)
+        ① 数据校验 → 检查 data JSON 含 "revenue" 字段
+        ② 归档存储 → 通过→APPROVED
+        ③ 汇总生成 → 累加所有报表的 revenue + orders
+        返回: { approved, rejected, aggregated_revenue, aggregated_orders }
 ```
+
+**WebSocket 进度推送：** 每处理 10% 广播一次，消息体：
+```json
+{"event":"batch:progress","data":{"batch_id":"...","current":60,"total":100,"percent":60,"status":"SKU校验+上架"}}
+```
+
+流程文字随表单类型变化（"商户清洗+编码+聚合"、"房源校验+审批"、"SKU校验+上架"、"报表校验+归档"），前端 WebSocket 接收后实时展示。
 
 ---
 
