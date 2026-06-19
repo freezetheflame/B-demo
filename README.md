@@ -131,19 +131,47 @@ API 文档：**http://localhost:8000/docs**
 
 **埋点机制：** 独立的 `submission_logs` 表——记录的是**提交事件**而非表单状态，区分「提交成功率」与「审核通过率」两个维度。
 
-### 4. 知识文档系统
+### 4. 知识文档系统（快存储）
 
-**数据模型：** 支持全文检索、自动版本递增、变更快照（diff_json）、软删除（deleted_at）、分类/标签多维度筛选。
+**数据模型：** 两个表协同——
+```
+KnowledgeDoc
+  ├── id (PK, auto-increment)
+  ├── merchant_id (索引)
+  ├── title / content (全文检索 — LIKE 双字段)
+  ├── tags (JSON 数组)
+  ├── category (分类)
+  ├── version (PUT 时自动 +1)
+  ├── status: draft | published | archived
+  └── deleted_at (软删除 — DELETE 设置此字段，列表自动过滤)
+
+KnowledgeDocVersion
+  ├── doc_id (FK → KnowledgeDoc.id)
+  ├── version (版本号)
+  ├── content (创建时/更新时的内容快照)
+  └── operated_at (自动时间戳)
+```
+
+**前端完整 CRUD：**
+
+| 操作 | 实现 |
+|:-----|:-----|
+| **创建** | 左侧表单输入 title + content → POST /docs → 自动生成 v1 + 版本快照 |
+| **列表** | 右侧卡片列表 — 显示标题/版本/状态/日期，hover 显示编辑/删除按钮 |
+| **详情** | 点击标题展开 — 展示完整 Markdown 内容 + 版本历史时间线 |
+| **编辑** | 点击编辑 → 表单回填当前内容 → PUT /docs/{id} → version 自动 +1 |
+| **删除** | 点击删除 → confirm 确认 → DELETE → 设置 deleted_at（软删除，可恢复） |
+| **搜索** | keyword 搜索 title+content，category 精确筛选 |
 
 **API：**
 | 方法 | 路径 | 说明 |
 |:----|:-----|:-----|
-| POST | `/api/v1/knowledge/docs` | 创建文档（自动生成 v1） |
-| GET | `/api/v1/knowledge/docs` | 列表查询（merchant_id/category/keyword） |
-| GET | `/api/v1/knowledge/docs/{id}` | 文档详情 |
-| PUT | `/api/v1/knowledge/docs/{id}` | 更新文档（自动版本递增 + 快照） |
-| DELETE | `/api/v1/knowledge/docs/{id}` | 软删除 |
-| GET | `/api/v1/knowledge/docs/{id}/versions` | 版本列表 |
+| POST | `/api/v1/knowledge/docs` | 创建文档（自动生成 v1 + 快照） |
+| GET | `/api/v1/knowledge/docs` | 列表查询（merchant_id/category/keyword/page） |
+| GET | `/api/v1/knowledge/docs/{id}` | 文档详情（含完整 content） |
+| PUT | `/api/v1/knowledge/docs/{id}` | 更新文档（version+1 + 新快照） |
+| DELETE | `/api/v1/knowledge/docs/{id}` | 软删除（deleted_at + status=archived） |
+| GET | `/api/v1/knowledge/docs/{id}/versions` | 版本历史列表 |
 
 ### 5. 批处理 + WebSocket 实时进度
 
