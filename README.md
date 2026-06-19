@@ -278,6 +278,56 @@ B-demo/
 
 ---
 
+## 🧪 测试体系（41 个测试 / 3 层）
+
+### 后端 — pytest
+
+```bash
+cd backend && source .venv/bin/activate
+pytest tests/ -v              # 全部 27 测试
+pytest tests/test_aggregation_pure.py -v  # 仅纯函数
+```
+
+| 文件 | 类型 | 测试数 | 覆盖 |
+|------|------|--------|------|
+| `test_aggregation_pure.py` | 纯函数单元 | 17 | Geohash 编码(6) + Haversine 距离(5) + 连通分量聚类(6) |
+| `test_api.py` | API 集成 | 10 | 全字段返回、分页、过滤、聚合端点、批处理、WebSocket |
+
+#### 纯函数测试要点
+
+| 测试类 | 验证内容 |
+|--------|---------|
+| `TestGeohashEncode` | 精度控制输出长度、幂等性、邻近点共享前缀、Base32 字符集、极端坐标 |
+| `TestHaversine` | 同点距离=0、已知距离（南京新街口→鼓楼~2.1km）、赤道1°≈111km、对称性 |
+| `TestClusterByDistance` | 单点成簇、近点合并、远点分离、链式连通、空输入、簇互斥 |
+
+#### API 集成测试要点
+
+| 测试 | 验证 |
+|------|------|
+| `test_list_merchant_forms_has_full_fields` | name/address/category/contact_name 非空 |
+| `test_forms_page_respects_pagination` | page=1 ≠ page=2 |
+| `test_aggregation_run_returns_correct_schema` | total_forms/clusters/elapsed_seconds 格式正确 |
+| `test_websocket_endpoint_accepts_connection` | 101 Switching Protocols |
+
+### 前端 — vitest
+
+```bash
+cd frontend && npx vitest run   # 14 测试
+```
+
+| 文件 | 测试数 | 覆盖 |
+|------|--------|------|
+| `utils.test.ts` | 14 | formatCell(5) + statusColors(3) + LRU 缓存(6) |
+
+| 测试组 | 验证内容 |
+|--------|---------|
+| `formatCell` | ¥千分位、面积1位小数、库存格式、null→"-" |
+| `statusColors` | 5 种状态全、Tailwind 语义正确（approved=绿 rejected=红） |
+| `createFormCache` | 存取、未命中、超限驱逐旧条目、clear、key 隔离 |
+
+---
+
 ## 📜 License
 
 MIT
