@@ -96,6 +96,14 @@ export default function KnowledgePage() {
     setVersions((await verRes.json()).data || []);
   };
 
+  const rollbackTo = async (docId: number, targetVersion: number) => {
+    if (!confirm(`确定回退到 v${targetVersion}？回退会创建新版本。`)) return;
+    await fetch(`http://localhost:8000/api/v1/knowledge/docs/${docId}/rollback/${targetVersion}`, {
+      method: "POST",
+    });
+    viewDoc(docId);  // refresh detail + versions
+  };
+
   // ─── Render ───
 
   const statusColors: Record<string, string> = {
@@ -219,7 +227,15 @@ export default function KnowledgePage() {
                   <div key={v.version} className="flex items-center justify-between text-xs text-gray-500 py-1 border-b border-gray-100">
                     <span className="font-mono">v{v.version}</span>
                     <span>{v.operated_at?.slice(0, 19).replace("T", " ")}</span>
-                    <span>{v.operated_by || "系统"}</span>
+                    <span className="flex items-center gap-2">
+                      {v.operated_by || "系统"}
+                      {v.version !== viewingDoc.version && (
+                        <button onClick={() => rollbackTo(viewingId, v.version)}
+                          className="text-orange-500 hover:underline">
+                          回退到此版本
+                        </button>
+                      )}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -232,7 +248,8 @@ export default function KnowledgePage() {
       <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-500 space-y-1">
         <p><strong>数据模型：</strong></p>
         <p>· 支持 <strong>全文检索</strong>（PostgreSQL LIKE 双字段匹配）</p>
-        <p>· 支持 <strong>版本管理</strong>（PUT 自动 version+1，创建快照到 knowledge_doc_versions）</p>
+        <p>· 支持 <strong>版本管理</strong>（PUT 自动 version+1，快照到 knowledge_doc_versions）</p>
+        <p>· 支持 <strong>版本回退</strong>（从任意历史快照恢复，回退本身也创建新版本）</p>
         <p>· 支持 <strong>软删除</strong>（DELETE 设置 deleted_at，列表自动过滤）</p>
         <p>· 支持 <strong>分类/标签</strong> 多维度筛选</p>
       </div>

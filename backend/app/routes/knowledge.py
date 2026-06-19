@@ -145,3 +145,44 @@ async def get_doc_versions(doc_id: int, db: AsyncSession = Depends(get_db)):
         "data": [{"version": v.version, "operated_at": v.operated_at.isoformat(),
                    "operated_by": v.operated_by} for v in versions]
     }
+
+
+@router.post("/docs/{doc_id}/rollback/{target_version}")
+async def rollback_doc(doc_id: int, target_version: int, db: AsyncSession = Depends(get_db)):
+    """回退文档到指定版本——从快照恢复内容。"""
+    doc = await db.get(KnowledgeDoc, doc_id)
+    if not doc or doc.deleted_at:
+        raise HTTPException(404, "Document not found")
+
+    # 找到目标版本的快照
+    result = await db.execute(
+        select(KnowledgeDocVersion)
+        .where(
+            KnowledgeDocVersion.doc_id == doc_id,
+            KnowledgeDocVersion.version == target_version,
+        )
+    )
+    snapshot = result.scalar_one_or_none()
+    if not snapshot:
+        raise HTTPException(404, f"Version {target_version} not found")
+
+    old_content = doc.content
+    doc.content = snapshot.content
+    doc.version += 1
+
+    # 回退本身也创建一个新版本快照（记录回退操作）
+    rollback_version = KnowledgeDocVersion(
+        doc_id=doc_id,
+        version=doc.version,
+        content=snapshot.content,
+        operated_by=f"rollback from v{target_version}",
+    )
+    db.add(rollback_version)
+    await db.commit()
+
+    return {
+        "id": doc_id,
+        "version": doc.version,
+        "rolled_back_from": target_version,
+        "status": "rolled_back",
+    }
