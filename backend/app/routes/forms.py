@@ -12,8 +12,10 @@ from app.models import (
     MerchantForm, ListingForm, ProductForm, ReportForm,
     FormStatus, SubmissionLog, FormType,
 )
+from app.routes.ws import notify_batch_progress
 from pydantic import BaseModel, Field
 from enum import Enum
+import time
 
 router = APIRouter()
 
@@ -105,9 +107,25 @@ async def list_forms(
         status=status, keyword=keyword, geohash_prefix=geohash_prefix,
     )
     rows, total = await query_forms(form_type, filters, db)
+    def _serialize(r):
+        status_val = r.status.value if hasattr(r.status, "value") else r.status
+        item = {
+            "id": r.id,
+            "status": status_val,
+        }
+        # Common fields across form types
+        for field in ["name", "title", "address", "category", "contact_name", 
+                       "contact_phone", "area", "price", "sku", "stock",
+                       "batch_id", "geohash", "submitted_at"]:
+            if hasattr(r, field):
+                val = getattr(r, field)
+                if isinstance(val, datetime):
+                    val = val.isoformat()
+                item[field] = val
+        return item
+
     return {
-        "data": [{"id": r.id, "status": r.status.value if hasattr(r.status, "value") else r.status}
-                 for r in rows],
+        "data": [_serialize(r) for r in rows],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -127,7 +145,7 @@ async def get_form(form_type: str, form_id: int, db: AsyncSession = Depends(get_
 
 @router.post("/{form_type}/batch")
 async def batch_process_forms(form_type: str, form_ids: list[int], db: AsyncSession = Depends(get_db)):
-    """Batch update form statuses."""
+    """Batch update form statuses with WebSocket progress."""
     model = MODEL_MAP.get(form_type)
     if not model:
         raise HTTPException(400, "Invalid form_type")
@@ -135,6 +153,16 @@ async def batch_process_forms(form_type: str, form_ids: list[int], db: AsyncSess
         select(model).where(model.id.in_(form_ids))
     )
     rows = result.scalars().all()
-    for row in rows:
+
+    total = len(rows)
+    batch_id = f"batch_{int(time.time())}"
+    chunk_size = max(1, total // 10)  # ~10 progress updates
+
+    for i, row in enumerate(rows):
         row.status = FormStatus.PROCESSING
-    return {"updated": len(rows)}
+        if (i + 1) % chunk_size == 0 or i == total - 1:
+            await notify_batch_progress(batch_id, i + 1, total, "processing")
+
+    await db.commit()
+    await notify_batch_progress(batch_id, total, total, "completed")
+    return {"updated": total, "batch_id": batch_id}

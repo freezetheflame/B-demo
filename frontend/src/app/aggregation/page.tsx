@@ -1,14 +1,20 @@
 "use client";
-import { useState } from "react";
+import { useState, useRef } from "react";
 
 export default function AggregationPage() {
   const [result, setResult] = useState<any>(null);
   const [loading, setLoading] = useState(false);
+  const distanceRef = useRef<HTMLInputElement>(null);
+  const precisionRef = useRef<HTMLInputElement>(null);
 
   const runAggregation = async () => {
     setLoading(true);
+    const distance = distanceRef.current?.value || "500";
+    const precision = precisionRef.current?.value || "6";
     try {
-      const res = await fetch("http://localhost:8000/api/v1/aggregation/run?distance_m=500&precision=6");
+      const res = await fetch(`http://localhost:8000/api/v1/aggregation/run?distance_m=${distance}&precision=${precision}`, {
+        method: "POST",
+      });
       const data = await res.json();
       setResult(data);
     } catch (e: any) {
@@ -30,11 +36,11 @@ export default function AggregationPage() {
         <div className="grid grid-cols-3 gap-4">
           <div>
             <label className="text-xs text-gray-500">聚合距离(米)</label>
-            <input defaultValue={500} className="w-full px-2 py-1 border rounded text-sm" />
+            <input ref={distanceRef} defaultValue={500} className="w-full px-2 py-1 border rounded text-sm" />
           </div>
           <div>
             <label className="text-xs text-gray-500">Geohash精度</label>
-            <input defaultValue={6} className="w-full px-2 py-1 border rounded text-sm" />
+            <input ref={precisionRef} defaultValue={6} className="w-full px-2 py-1 border rounded text-sm" />
           </div>
           <div className="flex items-end">
             <button
